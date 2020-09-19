@@ -422,6 +422,14 @@ class ECSCluster(SpecCluster):
         Select whether or not to use fargate for the workers.
 
         Defaults to ``False``. You must provide an existing cluster.
+    fargate_spot: bool (optional)
+        Select whether or not to include ``FARGATE_SPOT`` Capacity Provider
+
+        Defaults to ``False``.
+    fargate_spot_weight: int (optional)
+        Specifies ``FARGATE_SPOT`` Capacity Provider Weight.
+
+        Defaults to ``4``.
     image: str (optional)
         The docker image to use for the scheduler and worker tasks.
 
@@ -596,6 +604,8 @@ class ECSCluster(SpecCluster):
         self,
         fargate_scheduler=False,
         fargate_workers=False,
+        fargate_spot=False,
+        fargate_spot_weight=4,
         image=None,
         scheduler_cpu=None,
         scheduler_mem=None,
@@ -633,6 +643,8 @@ class ECSCluster(SpecCluster):
     ):
         self._fargate_scheduler = fargate_scheduler
         self._fargate_workers = fargate_workers
+        self._fargate_spot = fargate_spot
+        self._fargate_spot_weight = fargate_spot_weight
         self.image = image
         self._scheduler_cpu = scheduler_cpu
         self._scheduler_mem = scheduler_mem
@@ -699,6 +711,10 @@ class ECSCluster(SpecCluster):
             self._fargate_scheduler = self.config.get("fargate_scheduler")
         if self._fargate_workers is None:
             self._fargate_workers = self.config.get("fargate_workers")
+        if self._fargate_spot is None:
+            self._fargate_spot = self.config.get("fargate_spot")
+        if self._fargate_spot_weight is None:
+            self._fargate_spot_weight = self.config.get("fargate_spot_weight")
 
         if self._tags is None:
             self._tags = self.config.get("tags")
@@ -878,10 +894,24 @@ class ECSCluster(SpecCluster):
             self._cluster_name_template
         )
         self.cluster_name = self.cluster_name.format(uuid=str(uuid.uuid4())[:10])
+        create_cluster_kwargs = {
+            "clusterName": self.cluster_name,
+            "tags": dict_to_aws(self.tags),
+        }
+        if self._fargate_spot:
+            create_cluster_kwargs = {
+                **create_cluster_kwargs,
+                "capacityProviders": ["FARGATE", "FARGATE_SPOT"],
+                "defaultCapacityProviderStrategy": [
+                    {
+                        "capacityProvider": "FARGATE_SPOT",
+                        "weight": self._fargate_spot_weight,
+                    },
+                    {"capacityProvider": "FARGATE", "weight": 1},
+                ],
+            }
         async with self._client("ecs") as ecs:
-            response = await ecs.create_cluster(
-                clusterName=self.cluster_name, tags=dict_to_aws(self.tags)
-            )
+            response = await ecs.create_cluster(**create_cluster_kwargs)
         weakref.finalize(self, self.sync, self._delete_cluster)
         return response["cluster"]["clusterArn"]
 
