@@ -605,7 +605,7 @@ class ECSCluster(SpecCluster):
         fargate_scheduler=False,
         fargate_workers=False,
         fargate_spot=None,
-        fargate_spot_weight=4,
+        fargate_spot_weight=None,
         image=None,
         scheduler_cpu=None,
         scheduler_mem=None,
