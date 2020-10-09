@@ -233,7 +233,6 @@ class Task:
                             ]
                         },
                         count=1,
-                        launchType="FARGATE" if self.fargate else "EC2",
                         networkConfiguration={
                             "awsvpcConfiguration": {
                                 "subnets": self._vpc_subnets,
