@@ -206,6 +206,14 @@ class Task:
         await self._update_task()
         return self.task["lastStatus"] == "RUNNING"
 
+    async def _is_default_capacity_provider_defined_for_all_clusters(self):
+        async with self._client("ecs") as ecs:
+            clusters = (
+                await ecs.describe_clusters(clusters=[self.cluster_arn])
+            )["clusters"]
+        all_capacity_providers_defined  = all([cluster['defaultCapacityProviderStrategy'] for cluster in clusters])
+        return all_capacity_providers_defined
+
     async def start(self):
         timeout = Timeout(60, "Unable to start %s after 60 seconds" % self.task_type)
         while timeout.run():
@@ -217,43 +225,66 @@ class Task:
                 )  # Tags are only supported if you opt into long arn format so we need to check for that
                 if self.platform_version and self.fargate:
                     kwargs["platformVersion"] = self.platform_version
+                default_capacity_provider_defined = await self._is_default_capacity_provider_defined_for_all_clusters()
                 async with self._client("ecs") as ecs:
-                    clusters = await ecs.describe_clusters(clusters=[self.cluster_arn])['clusters']
-                    default_capacity_provider_defined_for_all_clusters \
-                        = all([cluster['defaultCapacityProviderStrategy'] for cluster in clusters])
-                    if default_capacity_provider_defined_for_all_clusters:
+                    if default_capacity_provider_defined and self.task_type == "worker":
                         # If all clusters have a default capacity provider defined, do not set the launch_type
-                        # as it would override the providers
-                        launch_type = None
-                    else:
-                        launch_type = "FARGATE" if self.fargate else "EC2"
-                    response = await ecs.run_task(
-                        cluster=self.cluster_arn,
-                        taskDefinition=self.task_definition_arn,
-                        overrides={
-                            "containerOverrides": [
-                                {
-                                    "name": "dask-{}".format(self.task_type),
-                                    "environment": dict_to_aws(
-                                        self.environment, key_string="name"
-                                    ),
-                                    **self._overrides,
+                        # as it would override the providers. Also, the FARGATE_SPOT capacity provider should be only
+                        # applied to workers.
+                        response = await ecs.run_task(
+                            cluster=self.cluster_arn,
+                            taskDefinition=self.task_definition_arn,
+                            overrides={
+                                "containerOverrides": [
+                                    {
+                                        "name": "dask-{}".format(self.task_type),
+                                        "environment": dict_to_aws(
+                                            self.environment, key_string="name"
+                                        ),
+                                        **self._overrides,
+                                    }
+                                ]
+                            },
+                            count=1,
+                            networkConfiguration={
+                                "awsvpcConfiguration": {
+                                    "subnets": self._vpc_subnets,
+                                    "securityGroups": self._security_groups,
+                                    "assignPublicIp": "ENABLED"
+                                    if self._use_public_ip
+                                    else "DISABLED",
                                 }
-                            ]
-                        },
-                        count=1,
-                        launchType=launch_type,
-                        networkConfiguration={
-                            "awsvpcConfiguration": {
-                                "subnets": self._vpc_subnets,
-                                "securityGroups": self._security_groups,
-                                "assignPublicIp": "ENABLED"
-                                if self._use_public_ip
-                                else "DISABLED",
-                            }
-                        },
-                        **kwargs
-                    )
+                            },
+                            **kwargs
+                        )
+                    else:
+                        response = await ecs.run_task(
+                            cluster=self.cluster_arn,
+                            taskDefinition=self.task_definition_arn,
+                            overrides={
+                                "containerOverrides": [
+                                    {
+                                        "name": "dask-{}".format(self.task_type),
+                                        "environment": dict_to_aws(
+                                            self.environment, key_string="name"
+                                        ),
+                                        **self._overrides,
+                                    }
+                                ]
+                            },
+                            count=1,
+                            launchType="FARGATE" if self.fargate else "EC2",
+                            networkConfiguration={
+                                "awsvpcConfiguration": {
+                                    "subnets": self._vpc_subnets,
+                                    "securityGroups": self._security_groups,
+                                    "assignPublicIp": "ENABLED"
+                                    if self._use_public_ip
+                                    else "DISABLED",
+                                }
+                            },
+                            **kwargs
+                        )
 
                 if not response.get("tasks"):
                     raise RuntimeError(response)  # print entire response
@@ -447,6 +478,10 @@ class ECSCluster(SpecCluster):
         Include ``FARGATE_SPOT`` capacity provider.
 
         Defaults to ``False``.
+    fargate_weight: int (optional)
+        Specifies ``FARGATE`` capacity provider weight. Considered only if ``fargate_spot`` is set to True.
+
+        Defaults to ``1``.
     fargate_spot_weight: int (optional)
         Specifies ``FARGATE_SPOT`` capacity provider weight. Considered only if ``fargate_spot`` is set to True.
 
@@ -614,7 +649,8 @@ class ECSCluster(SpecCluster):
         fargate_scheduler=False,
         fargate_workers=False,
         fargate_spot=None,
-        fargate_spot_weight=None,
+        fargate_capacity_provider_weight=None,
+        fargate_capacity_provider_spot_weight=None,
         image=None,
         scheduler_cpu=None,
         scheduler_mem=None,
@@ -653,7 +689,8 @@ class ECSCluster(SpecCluster):
         self._fargate_scheduler = fargate_scheduler
         self._fargate_workers = fargate_workers
         self._fargate_spot = fargate_spot
-        self._fargate_spot_weight = fargate_spot_weight
+        self._fargate_capacity_provider_weight = fargate_capacity_provider_weight
+        self._fargate_capacity_provider_spot_weight = fargate_capacity_provider_spot_weight
         self.image = image
         self._scheduler_cpu = scheduler_cpu
         self._scheduler_mem = scheduler_mem
@@ -720,10 +757,13 @@ class ECSCluster(SpecCluster):
             self._fargate_scheduler = self.config.get("fargate_scheduler")
         if self._fargate_workers is None:
             self._fargate_workers = self.config.get("fargate_workers")
+
         if self._fargate_spot is None:
             self._fargate_spot = self.config.get("fargate_spot")
-        if self._fargate_spot_weight is None:
-            self._fargate_spot_weight = self.config.get("fargate_spot_weight")
+        if self._fargate_capacity_provider_weight is None:
+            self._fargate_capacity_provider_weight = self.config.get("fargate_capacity_provider_weight")
+        if self._fargate_capacity_provider_spot_weight is None:
+            self._fargate_capacity_provider_spot_weight = self.config.get("fargate_capacity_provider_spot_weight")
 
         if self._tags is None:
             self._tags = self.config.get("tags")
@@ -908,17 +948,20 @@ class ECSCluster(SpecCluster):
             "tags": dict_to_aws(self.tags),
         }
         if self._fargate_spot:
-            create_cluster_kwargs = {
-                **create_cluster_kwargs,
+            create_cluster_kwargs.update(
+            {
                 "capacityProviders": ["FARGATE", "FARGATE_SPOT"],
                 "defaultCapacityProviderStrategy": [
                     {
-                        "capacityProvider": "FARGATE_SPOT",
-                        "weight": self._fargate_spot_weight,
+                        "capacityProvider": "FARGATE",
+                        "weight": self._fargate_capacity_provider_weight
                     },
-                    {"capacityProvider": "FARGATE", "weight": 1},
+                    {
+                        "capacityProvider": "FARGATE_SPOT",
+                        "weight": self._fargate_capacity_provider_spot_weight,
+                    }
                 ],
-            }
+            })
         async with self._client("ecs") as ecs:
             response = await ecs.create_cluster(**create_cluster_kwargs)
         weakref.finalize(self, self.sync, self._delete_cluster)

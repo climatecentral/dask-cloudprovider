@@ -194,6 +194,17 @@ the default Docker image to ``rapidsai/rapidsai:latest``, if you're using a cust
 you must ensure the NVIDIA CUDA toolkit is installed with a version that matches the host machine
 along with ``dask-cuda``.
 
+Fargate Spot Support
+~~~~~~~~~~~
+Fargate Spot tasks are up to 70% discount off the Fargate price. The concept is the same as with EC2
+spot instances: AWS uses its spare capacity to run these tasks. When the capacity is needed back, tasks
+running on Fargate Spot will be interrupted and the cluster scaled down. It makes a good fit for
+fault-tolerant tasks, allowing to optimize costs.
+
+If Fargate Spot is enabled (by setting ``fargate_spot`` to ``True``), the number of normal tasks
+versus spot is governed by the ratio of weights set by ``fargate_capacity_provider_weight`` and
+``fargate_capacity_provider_spot_weight``.
+
 
 Azure
 -----
