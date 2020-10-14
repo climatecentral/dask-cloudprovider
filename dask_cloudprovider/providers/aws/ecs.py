@@ -953,13 +953,13 @@ class ECSCluster(SpecCluster):
                 "capacityProviders": ["FARGATE", "FARGATE_SPOT"],
                 "defaultCapacityProviderStrategy": [
                     {
+                        "capacityProvider": "FARGATE_SPOT",
+                        "weight": self._fargate_capacity_provider_spot_weight,
+                    },
+                    {
                         "capacityProvider": "FARGATE",
                         "weight": self._fargate_capacity_provider_weight
                     },
-                    {
-                        "capacityProvider": "FARGATE_SPOT",
-                        "weight": self._fargate_capacity_provider_spot_weight,
-                    }
                 ],
             })
         async with self._client("ecs") as ecs:
