@@ -218,6 +218,15 @@ class Task:
                 if self.platform_version and self.fargate:
                     kwargs["platformVersion"] = self.platform_version
                 async with self._client("ecs") as ecs:
+                    clusters = await ecs.describe_clusters(clusters=[self.cluster_arn])['clusters']
+                    default_capacity_provider_defined_for_all_clusters \
+                        = all([cluster['defaultCapacityProviderStrategy'] for cluster in clusters])
+                    if default_capacity_provider_defined_for_all_clusters:
+                        # If all clusters have a default capacity provider defined, do not set the launch_type
+                        # as it would override the providers
+                        launch_type = None
+                    else:
+                        launch_type = "FARGATE" if self.fargate else "EC2"
                     response = await ecs.run_task(
                         cluster=self.cluster_arn,
                         taskDefinition=self.task_definition_arn,
@@ -233,6 +242,7 @@ class Task:
                             ]
                         },
                         count=1,
+                        launchType=launch_type,
                         networkConfiguration={
                             "awsvpcConfiguration": {
                                 "subnets": self._vpc_subnets,
@@ -421,14 +431,6 @@ class ECSCluster(SpecCluster):
         Select whether or not to use fargate for the workers.
 
         Defaults to ``False``. You must provide an existing cluster.
-    fargate_spot: bool (optional)
-        Select whether or not to include ``FARGATE_SPOT`` Capacity Provider
-
-        Defaults to ``False``.
-    fargate_spot_weight: int (optional)
-        Specifies ``FARGATE_SPOT`` Capacity Provider Weight.
-
-        Defaults to ``4``.
     image: str (optional)
         The docker image to use for the scheduler and worker tasks.
 
@@ -441,6 +443,14 @@ class ECSCluster(SpecCluster):
         The amount of memory to request for the scheduler in MB.
 
         Defaults to ``4096`` (4GB).
+    fargate_spot: bool (optional)
+        Include ``FARGATE_SPOT`` capacity provider.
+
+        Defaults to ``False``.
+    fargate_spot_weight: int (optional)
+        Specifies ``FARGATE_SPOT`` capacity provider weight. Considered only if ``fargate_spot`` is set to True.
+
+        Defaults to ``4``.
     scheduler_timeout: str (optional)
         The scheduler task will exit after this amount of time if there are no clients connected.
 
